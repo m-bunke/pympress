@@ -1,0 +1,117 @@
+name: 'Windows ARM64 build'
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [ '**' ]
+
+
+jobs:
+  windows-arm64:
+    name: Windows ARM64 Binaries
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup msys and dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git
+            zip
+            base-devel
+          # :p resolves to the current environment's package prefix
+          pacboy: >-
+            jq:p
+            curl:p
+            gtk3:p
+            cairo:p
+            poppler:p
+            python:p
+            python-pip:p
+            python-gobject:p
+            python-cairo:p
+            python-appdirs:p
+            python-setuptools:p
+            python-packaging:p
+            python-cx-freeze:p
+            python-babel:p
+            python-watchdog:p
+
+      - name: Install ghostscript "base 35" fonts
+        run: >
+          curl -L https://sourceforge.net/projects/gs-fonts/files/latest/download
+          | tar xzf - -C "$MSYSTEM_PREFIX/share/"
+
+      - name: Install python-only dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check --break-system-packages python-vlc
+
+      - name: Compile translations
+        run: python3 setup.py compile_catalog
+
+      - name: Build binary
+        run: python3 setup.py --freeze build_exe
+
+      - name: Make file basename
+        id: name
+        run: |
+          version=`sed -n "s/^__version__ = '\(.*\)'/\1/p" pympress/__init__.py`
+          echo file=pympress-$version-arm64 | tee -a $GITHUB_OUTPUT
+
+      - name: Build installer
+        # --target-name was removed in cx_Freeze 8.6
+        run: python3 setup.py --freeze bdist_msi --output-name ${{ steps.name.outputs.file }}.msi --skip-build
+
+      - name: Make portable install
+        run: |
+          cd build
+          mv exe.* pympress
+          cp ../pympress/share/defaults.conf pympress/pympress.conf
+          zip -r ../dist/${{ steps.name.outputs.file }}.zip pympress/
+          cd -
+
+      - name: Install pympress
+        shell: pwsh
+        run: |
+          $installer = gci -path dist\* -include *.msi -name
+          Start-Process msiexec.exe -Wait -NoNewWindow -ArgumentList ('/i "dist\{0}" /qn /norestart /L* installer.log' -f $installer)
+
+          echo "::group::Installer log"
+          get-content installer.log
+          echo "::endgroup::"
+
+      - name: Run pympress
+        shell: pwsh
+        run: |
+          # Check pympress install dir is appended to one of the $PATH variables
+          $dir = (
+            [System.Environment]::GetEnvironmentVariable("Path","Machine").split(";") +
+            [System.Environment]::GetEnvironmentVariable("Path","User").split(";")
+          ) | Select-String 'pympress'
+
+          gci -path $dir -filter *exe
+
+          Start-Process "$dir\pympress.exe" -Wait -NoNewWindow -ArgumentList "--quit"
+
+          echo "::group::Pympress log"
+          get-content "$env:LOCALAPPDATA\pympress.log"
+          echo "::endgroup::"
+
+      - name: Archive production artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pympress-windows-arm64
+          path: |
+            dist/*.zip
+            dist/*.msi

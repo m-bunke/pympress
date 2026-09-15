@@ -27,7 +27,6 @@ All configuration is in setup.cfg.
 """
 
 import os
-import re
 import sys
 import pathlib
 import subprocess
@@ -144,40 +143,47 @@ def gtk_resources():
 def dlls():
     """ Returns a list of all DLL files we need to include, in a frozen/binary package on windows.
 
-    Relies on a hardcoded list tested for the appveyor build setup.
+    Libraries are listed without ABI version suffix, which differs per MSYS2 environment.
     """
     if os.name != 'nt':
         return []
 
-    libs = 'libatk-1.0-0.dll libbrotlicommon.dll libbrotlidec.dll libcurl-4.dll libdatrie-1.dll \
-    libepoxy-0.dll libfribidi-0.dll libgdk-3-0.dll libgdk_pixbuf-2.0-0.dll libgif-7.dll \
-    libgio-2.0-0.dll libgirepository-1.0-1.dll libglib-2.0-0.dll libgobject-2.0-0.dll libgtk-3-0.dll \
-    libidn2-0.dll libjpeg-8.dll liblcms2-2.dll libnghttp2-14.dll libnspr4.dll libopenjp2-7.dll \
-    libpango-1.0-0.dll libpangocairo-1.0-0.dll libpangoft2-1.0-0.dll libpangowin32-1.0-0.dll \
-    libplc4.dll libplds4.dll libpoppler-105.dll libpoppler-cpp-0.dll libpoppler-glib-8.dll libpsl-5.dll \
-    libpython{0.major}.{0.minor}.dll libstdc++-6.dll libthai-0.dll libtiff-5.dll libunistring-2.dll \
-    libwinpthread-1.dll libzstd.dll nss3.dll nssutil3.dll smime3.dll'.format(sys.version_info)
+    libs = '''
+    libatk-1.0 libbrotlicommon libbrotlidec libcurl libdatrie libepoxy libfribidi libgdk-3
+    libgdk_pixbuf-2.0 libgif libgio-2.0 libgirepository-1.0 libglib-2.0 libgobject-2.0 libgtk-3
+    libidn2 libjpeg liblcms2 libnghttp2 libnspr4 libopenjp2 libpango-1.0 libpangocairo-1.0
+    libpangoft2-1.0 libpangowin32-1.0 libplc4 libplds4 libpoppler libpoppler-cpp libpoppler-glib
+    libpsl libthai libtiff libunistring libwinpthread libzstd nss3 nssutil3 smime3
+    '''.split() + ['libpython{0.major}.{0.minor}'.format(sys.version_info)]
     # these appear superfluous, though unexpectedly so:
     # libcairo-2.dll libcairo-gobject-2.dll libfontconfig-1.dll libfreetype-6.dll libiconv-2.dll
     # libgettextlib-0-19-8-1.dll libgettextpo-0.dll libgettextsrc-0-19-8-1.dll libintl-8.dll libjasper-4.dll
+
+    # gcc environments ship libstdc++/libgcc, llvm ones libc++/libunwind
+    optional_libs = ['libstdc++-6', 'libgcc_s_seh-1', 'libgcc_s_dw2-1', 'libc++', 'libunwind']
 
     lib_gtk_dir = pathlib.Path(find_library('libgtk-3-0')).parent
 
     gdbus = pathlib.Path(find_library('gdbus.exe'))
     include_files = [(str(gdbus), str(pathlib.Path('lib', 'gi', 'gdbus.exe'))), (str(gdbus), 'gdbus.exe')]
-    for lib in libs.split():
-        path = find_library(lib)
-        path = pathlib.Path(path) if path is not None else path
-        if path is not None and path.exists():
-            include_files.append((str(path), lib))
-        else:
-            lib = pathlib.Path(lib)
-            # Look in other directories?
-            for path in lib_gtk_dir.glob(re.sub('-[0-9.]*$', '-*', lib.stem) + lib.suffix):
+
+    included = set()
+    for lib in libs + optional_libs:
+        candidates = []
+
+        path = find_library(lib + '.dll')  # unversioned, e.g. libzstd.dll
+        if path is not None and pathlib.Path(path).exists():
+            candidates.append(pathlib.Path(path))
+
+        candidates.extend(sorted(lib_gtk_dir.glob(lib + '-*.dll')))  # versioned, e.g. libtiff-6.dll
+
+        for path in candidates:
+            if path.name not in included:
+                included.add(path.name)
                 include_files.append((str(path), path.name))
-                print('WARNING: Can not find library {}, including {} instead'.format(lib, path.name))
-            else:
-                print('WARNING: Can not find library {}'.format(lib))
+
+        if not candidates and lib not in optional_libs:
+            print('WARNING: Can not find library {}'.format(lib))
 
     return include_files
 
